@@ -18,6 +18,8 @@
 
 volatile int trips_made = 0;
 volatile int tickets = 0; // Remaining tickets to be sold for today. Initially = numTourists x trips‐per‐tourist
+volatile int seats = 0; // Remaining seats on the bus. Initially = bus‐capacity
+sem_t semaphores[MAXTOURISTS];
 sem_t *arrival_sem;
 sem_t *default_sem;
 sem_t *threads_closed;
@@ -43,50 +45,65 @@ void *tourist_thread(void *arg) {
     bool seated = false;
 
     Sem_wait(default_sem); // Lock access to stdout for printing
+    // Sem_wait(semaphores + tourist_number);
     printf("Tourist %d: Arrived to Harrisonburg.\n", tourist_number);
-    /////////////////////////////
+    Sem_post(default_sem); // Release access to stdout for printing
+    
+    
     if (tripsToGo > 0) {
+
         while (tripsToGo > 0) {
-        int time = (random() % (4000 - 1500 + 1)) + 1500;
-        // Sem_wait(default_sem); // Lock access to stdout for printing
-        printf("Tourist %d: Round # %d. Going to shop for %d milliseconds\n", tourist_number, args->trips_to_go - tripsToGo + 1, time);
-        Sem_post(default_sem); // Release access to stdout for printing
 
-        // Shopping
-        usleep(time * 1000);
-        Sem_wait(shop_sem);
-        printf("Tourist %d: Back from shopping, waiting for a seat on the bus\n", tourist_number);
-        Sem_post(shop_sem);
-        Sem_post(arrival_sem);
+            int time = (random() % (4000 - 1500 + 1)) + 1500;
+            
+            printf("Tourist %d: Round # %d. Going to shop for %d milliseconds\n", tourist_number, args->trips_to_go - tripsToGo + 1, time);
+            Sem_post(default_sem); // Release access to stdout for printing
 
-        // Get on the bus
-        Sem_wait(on_bus_sem);
-        printf("Tourist %d: I got on board the bus.. Belt CLICK\n", tourist_number);
-        Sem_post(on_bus_sem);
+            Sem_post(semaphores + tourist_number); //Tell driver one of the tourists is done
 
-        // // Wait for the bus tour to finish
-        // Sem_wait(off_bus_sem);
-        // printf("Tourist %d: Got off the bus\n", tourist_number);
-        // Sem_post(off_bus_sem);
+            // Shopping
+            usleep(time);
 
-        tripsToGo--;
+            Sem_wait(semaphores);
+            Sem_wait(semaphores + tourist_number);
+            Sem_wait(shop_sem);
+            if (seats > 0) {
+                printf("Tourist %d: Back from shopping, waiting for a seat on the bus\n", tourist_number);
+                printf("Tourist %d: I got on board the bus.. Belt CLICK\n", tourist_number);
+            }
+            
+            Sem_post(shop_sem);
+            
+
+            // Get on the bus
+            // Sem_wait(on_bus_sem);
+            // printf("Tourist %d: I got on board the bus.. Belt CLICK\n", tourist_number);
+            // Sem_post(on_bus_sem);
+
+            // // Wait for the bus tour to finish
+            // Sem_wait(off_bus_sem);
+            // printf("Tourist %d: Got off the bus\n", tourist_number);
+            // Sem_post(off_bus_sem);
+
+            tripsToGo--;
         }
     } else {
 
         Sem_post(default_sem); // Release access to stdout for printing
-        Sem_post(arrival_sem); // Signal that the tourist has arrived in town
+        Sem_post(semaphores + tourist_number); //Tell driver one of the tourists is done
     }
-    /////////////////////////////
+ 
 
     if (tripsToGo == 0) {
         printf("Tourist %d: Packing my luggage\n", tourist_number);
         //wait for driver to say business is closed
         Sem_wait(default_sem);
         printf("Tourist %d: Leaving Town\n", tourist_number);
+        Sem_post(default_sem);
     } else {
 
     }
-    int time = (random() % (4000 - 1500 + 1)) + 1500;
+
     
     free(args);
     pthread_exit(NULL);
@@ -96,34 +113,51 @@ void *driver_thread(void *arg) {
    DriverData_t* args = (DriverData_t*) arg;
     int tourists = args->tourist_num;
     int seats = args->seats;
+
     printf("\nIndy\t: Started My Day Waiting for ALL %d tourists to arrive in town\n\n", tourists);
     Sem_post(default_sem);
 
     // Wait for all tourists to arrive in town
-    for (int i = 0; i < tourists; i++) {
-        Sem_wait(arrival_sem);
+    for (int i = 1; i < tourists + 1; i++) {
+        Sem_wait(semaphores+i);
+        Sem_post(semaphores+i);   
     }
 
-
-    Sem_wait(shop_sem);
     while (true) {
         if (tickets == 0) {
             printf("\nIndy\t: Business is now closed for today. I did %d tours today\n", trips_made);
-            Sem_post(shop_sem);
+          
             pthread_exit(NULL);
         } else {
-            printf("Indy\t: Starting Tour #%d. Announcing %d vacant seats\n", trips_made + 1, seats);
-            printf("Indy\t: Taking a nap till tourists get on board\n");
-            Sem_post(shop_sem);
-            Sem_wait(on_bus_sem);
+
+            // printf("%d\n", tickets);
+            printf("\nIndy\t: Starting Tour #%d. Announcing %d vacant seats\n", trips_made + 1, seats);
+            printf("Indy\t: Taking a nap till tourists get on board\n\n");
+            tickets -= 1;
+
+            
+            for (int i = 0; i < tourists; i++) {
+                Sem_post(semaphores); //Tourists can now start boarding the bus.
+            }
+            
+
+            // Wait for all tourists to get on board or for the bus to fill up
+            
+            for (int i = 1; i < tourists + 1; i++) {
+                Sem_wait(semaphores+i);
+                Sem_post(semaphores+i);   
+            }
+
+            for (int i = 1; i < tourists + 1; i++) {
+                Sem_wait(semaphores+i);
+                Sem_post(semaphores+i);   
+            }
+            
+            trips_made += 1;
         }
     }
-    
-    
-
     // printf("\nIndy\t: Starting Tour #%d. Announcing %d vacant seat\n", trips_made + 1, /*seats remaining*/);
 
-    
 }
 
 int main(int argc, char *argv[]) {
@@ -149,6 +183,7 @@ int main(int argc, char *argv[]) {
     int t = atoi(argv[3]);
 
     tickets = n * t;
+    seats = s;
 
     pthread_t   tid;
     
@@ -158,17 +193,17 @@ int main(int argc, char *argv[]) {
 
     // Sem_unlink("/default_semaphoreSerjFaiq");
     // Sem_unlink("/arrival_semaphoreSerjFaiq");
-    // Sem_unlink("/on_bus_semaphoreSerjFaiq");
+    // // // Sem_unlink("/on_bus_semaphoreSerjFaiq");
     // Sem_unlink("/shop_semaphoreSerjFaiq");
     
-    
     // return 1;
+    
 
     //Create semaphores
     arrival_sem = Sem_open("/arrival_semaphoreSerjFaiq", O_CREAT | O_EXCL, 0666, 0);
     default_sem = Sem_open("/default_semaphoreSerjFaiq", O_CREAT | O_EXCL, 0666, 0);
-    shop_sem = Sem_open("/shop_semaphoreSerjFaiq", O_CREAT | O_EXCL, 0666, 0);
-    on_bus_sem = Sem_open("/on_bus_semaphoreSerjFaiq", O_CREAT | O_EXCL, 0666, -2);
+    shop_sem = Sem_open("/shop_semaphoreSerjFaiq", O_CREAT | O_EXCL, 0666, 1);
+    // on_bus_sem = Sem_open("/on_bus_semaphoreSerjFaiq", O_CREAT | O_EXCL, 0666, 0);
     // off_bus_sem = Sem_open("/off_bus_semaphoreSerjFaiq", O_CREAT | O_EXCL, 0666, 0);
     // sing_sem = Sem_open("/sing_semaphore", O_CREAT | O_EXCL, 0666, 0);
     // printf("hello\n");
@@ -176,8 +211,11 @@ int main(int argc, char *argv[]) {
 
     pthread_t threads[n + 1];
     // Create threads
+
+
     for(int i = 0; i < n + 1; i++) 
     {
+        Sem_init( semaphores + i, 0, 0);
         
         if (i == 0) {
             // Indiana thread
@@ -200,14 +238,14 @@ int main(int argc, char *argv[]) {
     Sem_close(arrival_sem);
     Sem_close(default_sem);
     Sem_close(shop_sem);
-    Sem_close(on_bus_sem);
+    // Sem_close(on_bus_sem);
     // Sem_close(off_bus_sem);
     // Sem_close(sing_sem);
 
     Sem_unlink("/arrival_semaphoreSerjFaiq");
     Sem_unlink("/default_semaphoreSerjFaiq");
     Sem_unlink("/shop_semaphoreSerjFaiq");
-    Sem_unlink("/on_bus_semaphoreSerjFaiq");
+    // Sem_unlink("/on_bus_semaphoreSerjFaiq");
     // Sem_unlink("/off_bus_semaphore");
     // Sem_unlink("/sing_semaphore");
 
